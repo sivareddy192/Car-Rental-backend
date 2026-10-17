@@ -4,6 +4,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import mongoose from 'mongoose';
 
 import { connectDB } from './config/db.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
@@ -26,13 +27,14 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Trust reverse proxy (required for rate limiting behind Vercel)
+app.set('trust proxy', 1);
 
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   })
 );
-
 
 const allowedOrigins = [
   process.env.FRONTEND_URL || 'http://localhost:5174'
@@ -57,23 +59,67 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-
 if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('dev'));
 }
-app.use('/api', apiLimiter);
 
-
-app.get('/api/health', (req, res) => {
+// 1. Root route - Responds immediately without blocking on DB
+app.get('/', (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   res.status(200).json({
     status: 'healthy',
+    message: 'Royal Drives Car Rental API is running',
+    database: dbStatus,
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      vehicles: '/api/vehicles',
+      bookings: '/api/bookings',
+      tours: '/api/tours',
+      auth: '/api/auth',
+    },
+  });
+});
+
+// 2. Health check endpoint
+app.get('/api/health', (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  res.status(200).json({
+    status: 'healthy',
+    database: dbStatus,
     timestamp: new Date().toISOString(),
     service: 'Car Rental API',
     emailProvider: 'Resend Exclusive',
   });
 });
 
+app.get('/api', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    message: 'Royal Drives API base endpoint',
+    health: '/api/health',
+  });
+});
 
+// 3. API Rate limiting
+app.use('/api', apiLimiter);
+
+// 4. Safe DB connection middleware for API routes that need the database
+app.use('/api', async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error('Database connection error in request:', error.message);
+    return res.status(503).json({
+      success: false,
+      message: 'Database connection failed. Please ensure MONGODB_URI is set in Vercel environment variables and MongoDB Atlas allows access from all IPs (0.0.0.0/0).',
+      error: error.message,
+    });
+  }
+});
+
+// 5. Functional API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/user', authRoutes);
 app.use('/api/vehicles', vehicleRoutes);
@@ -89,14 +135,13 @@ app.use('/api/blogs', blogRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/admin', adminRoutes);
 
-
-app.use('/api/*', (req, res) => {
+// Catch-all 404 handler for any unhandled routes
+app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
-    message: `API endpoint '${req.originalUrl}' not found.`,
+    message: `Route '${req.originalUrl}' not found on this server.`,
   });
 });
-
 
 app.use(errorHandler);
 
@@ -125,6 +170,9 @@ const startServer = async () => {
   }
 };
 
-startServer();
+// Start local listener only if not running in Vercel serverless environment
+if (!process.env.VERCEL && process.env.NODE_ENV !== 'test') {
+  startServer();
+}
 
 export default app;

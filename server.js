@@ -63,8 +63,13 @@ if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('dev'));
 }
 
-// 1. Root route - Responds immediately without blocking on DB
-app.get('/', (req, res) => {
+// 1. Root route - Checks/connects to DB and reports status
+app.get('/', async (req, res) => {
+  try {
+    await connectDB();
+  } catch (error) {
+    console.error('Root route DB connection error:', error.message);
+  }
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   res.status(200).json({
     status: 'healthy',
@@ -82,7 +87,12 @@ app.get('/', (req, res) => {
 });
 
 // 2. Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  try {
+    await connectDB();
+  } catch (error) {
+    console.error('Health check DB connection error:', error.message);
+  }
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   res.status(200).json({
     status: 'healthy',
